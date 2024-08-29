@@ -1,0 +1,73 @@
+from mage_ai.settings.repo import get_repo_path
+from mage_ai.io.config import ConfigFileLoader
+from mage_ai.io.mongodb import MongoDB
+from os import path
+import pandas as pd
+
+if 'data_loader' not in globals():
+    from mage_ai.data_preparation.decorators import data_loader
+if 'test' not in globals():
+    from mage_ai.data_preparation.decorators import test
+
+def add_promotion_id(sales_dt,df_promotion):
+    promotion = df_promotion[(sales_dt >= df_promotion['start_date']) & (sales_dt <= df_promotion['end_date'] ) ][['id']]
+    if promotion.shape[0] == 0:
+        promotion_id = -1
+    else:
+        promotion_id = promotion.iloc[0,0]
+    return promotion_id
+
+def convert_order_id(id,alias):
+    return id+alias
+
+@data_loader
+def load_from_mongodb(*args, **kwargs):
+    config_path = path.join(get_repo_path(), 'io_config.yaml')
+    config_profile = 'default'
+
+    query = {}
+
+    df_menu = MongoDB.with_config(ConfigFileLoader(config_path, config_profile)).load(
+        query=query,
+        collection='menu',
+    )
+    df_menu = df_menu.drop(['_id'],axis=1)
+
+    df_order = MongoDB.with_config(ConfigFileLoader(config_path, config_profile)).load(
+        query=query,
+        collection='order',
+    )
+    df_order = df_order.drop(['_id'],axis=1)
+
+    df_promotion = MongoDB.with_config(ConfigFileLoader(config_path, config_profile)).load(
+        query=query,
+        collection='promotion',
+    )
+
+    df_promotion = df_promotion.drop(['_id'],axis=1)
+    df_promotion['start_date'] = pd.to_datetime(df_promotion['start_date']).dt.date
+    df_promotion['end_date'] = pd.to_datetime(df_promotion['end_date']).dt.date
+    
+    df_order['sales_date'] = pd.to_datetime(df_order['sales_date']).dt.date
+    
+    df_order['order_id'] = df_order['order_id'].astype('string')
+    df_order['order_id'] = df_order['order_id'].apply(lambda x: convert_order_id(x,'_mongodb'))
+
+    df_order['promotion_id'] =  df_order['sales_date'].apply(lambda x:add_promotion_id(x,df_promotion))
+
+    df_menu_agg = df_menu.groupby('menu_id').agg({'effective_date':'max'}).reset_index()
+    df_menu_effective = df_menu.merge(df_menu_agg,on=['menu_id','effective_date'])
+
+    df_result  = pd.merge(df_order,df_promotion,left_on='promotion_id',right_on='id',how='left') \
+            .merge(df_menu_effective,on='menu_id')
+
+
+    return df_result
+
+
+@test
+def test_output(output, *args) -> None:
+    """
+    Template code for testing the output of the block.
+    """
+    assert output is not None, 'The output is undefined'
